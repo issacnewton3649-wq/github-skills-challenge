@@ -1,4 +1,5 @@
 from pathlib import Path
+import runpy
 
 from src.anomaly_detector import AnomalyDetector
 from src.aiops_pipeline import run_pipeline
@@ -40,6 +41,24 @@ def test_anomalous_record_is_detected():
 
     assert event is not None
     assert event["type"] == "ANOMALY"
+    assert "Error log detected" in event["reasons"]
+
+
+def test_warning_log_is_detected():
+    detector = AnomalyDetector()
+    record = {
+        "timestamp": "2026-09-20T10:05:00",
+        "service": "payment-service",
+        "response_time_ms": 120,
+        "cpu_percent": 42,
+        "memory_percent": 51,
+        "log_level": "WARNING",
+        "message": "Payment request took longer than expected"
+    }
+
+    event = detector.detect(record)
+
+    assert event["reasons"] == ["Error log detected"]
 
 
 def test_producer_publishes_event():
@@ -53,6 +72,14 @@ def test_producer_publishes_event():
 
     assert producer.publish(event)
     assert len(topic.get_messages()) == 1
+
+
+def test_producer_rejects_empty_event():
+    topic = EventTopic("anomaly-events")
+    producer = EventProducer(topic)
+
+    assert producer.publish(None) is False
+    assert topic.get_messages() == []
 
 
 def test_consumer_receives_event():
@@ -70,3 +97,29 @@ def test_consumer_receives_event():
     messages = consumer.consume()
 
     assert len(messages) == 1
+
+
+def test_topic_clear_removes_published_events():
+    topic = EventTopic("anomaly-events")
+    topic.publish({"type": "ANOMALY"})
+
+    topic.clear()
+
+    assert topic.get_messages() == []
+
+
+def test_pipeline_consumes_detected_events():
+    result = run_pipeline(Path("data/service_data.json"))
+
+    assert result["records_processed"] == 10
+    assert len(result["anomalies_detected"]) == 2
+    assert len(result["events_consumed"]) == 2
+    assert result["events_consumed"] == result["anomalies_detected"]
+
+
+def test_pipeline_script_prints_result(capsys):
+    runpy.run_path("src/aiops_pipeline.py", run_name="__main__")
+
+    output = capsys.readouterr().out
+    assert "AIOps Pipeline Result" in output
+    assert "Anomalies detected: 2" in output
